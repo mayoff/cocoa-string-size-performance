@@ -8,122 +8,116 @@
 
 #import <Cocoa/Cocoa.h>
 
-#define ITEMS_COUNT 1000000
+#define ITEMS_COUNT 1000
 #define ITEMS_ARRAY_CHUNK_THRESHOLD 10000
 
-NS_INLINE void performAnalysisUsingSizeWithAttributes(NSArray* items)
-{
-    double width = 0, timeTaken = 0;
-    NSDate *startDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    for(NSString *item in items)
-    {
-        width = MAX(width, [item sizeWithAttributes:nil].width);
-    }
-    timeTaken = -[startDate timeIntervalSinceNow];
-    NSLog(@"-----------------------Using [NSString sizeWithAttributes:]------------------\n");
-    NSLog(@"Time to measure the width(%f) of %li strings is %f\n\n\n",width, items.count, timeTaken);
+typedef CGFloat (^TestBlock)(void);
+
+static void runTest(NSString *description, TestBlock block) {
+    CFAbsoluteTime startTime = CFAbsoluteTimeGetCurrent();
+    CGFloat answer = block();
+    CFAbsoluteTime endTime = CFAbsoluteTimeGetCurrent();
+    printf("%30s: %3.0f usec per string; answer = %.6f\n", description.UTF8String, 1000000.0 * (endTime - startTime) / ITEMS_COUNT, answer);
 }
 
-NS_INLINE void performAnalysisUsingNSAttributedString(NSArray* items)
-{
-    double width = 0, timeTaken = 0;
-    NSDate *startDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    for(NSString *item in items)
-    {
-        NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:item];
-        width = MAX(width, attributedString.size.width);
-    }
-    timeTaken = -[startDate timeIntervalSinceNow];
-    NSLog(@"-----------------------Using [NSAttributedString size]------------------\n");
-    NSLog(@"Time taken to measure the width(%f) of %li strings is %f\n\n\n",width, items.count, timeTaken);
-}
-
-NS_INLINE void performAnalysisUsingNSLayoutManager(NSArray* items)
-{
-    double width = 0, timeTaken = 0;
-    NSDate *startDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    
-    NSLayoutManager *layoutManager = [NSLayoutManager new];
-    NSTextContainer *textContainer = [NSTextContainer new];
-    [textContainer setLineFragmentPadding:0];
-    [layoutManager addTextContainer:textContainer];
-    
-    NSMutableArray *textStorageObjects = [NSMutableArray new];
-    for(NSString *item in items)
-    {
-        @autoreleasepool {
-            NSTextStorage *textStorage = [[NSTextStorage alloc] initWithString:item];
-            [textStorage addLayoutManager:layoutManager];
-            [textStorageObjects addObject:textStorage];
+static void test_sizeWithAttributes(NSArray *testStrings) {
+    runTest(@"sizeWithAttributes", ^{
+        double width = 0;
+        for(NSString *string in testStrings) {
+            width = MAX(width, [string sizeWithAttributes:nil].width);
         }
-    }
-    timeTaken = -[startDate timeIntervalSinceNow];
-    NSLog(@"-----------------------Using NSLayoutManager------------------\n");
-    NSLog(@"Time taken to create %li NSTextStorage objects is %f",items.count, timeTaken);
-    
-    startDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    [layoutManager glyphRangeForTextContainer:textContainer];
-    width = [layoutManager usedRectForTextContainer:textContainer].size.width;
-    timeTaken = -[startDate timeIntervalSinceNow];
-    NSLog(@"Time taken to measure the width(%f) of %li strings is %f\n\n\n",width, items.count, timeTaken);
+        return width;
+    });
 }
 
-NS_INLINE void performAnalysisByChunkingAndReusingLayoutManagerObjects(NSArray* items)
-{
-    NSMutableArray *chunks = [NSMutableArray new];
+static void test_NSAttributedString(NSArray* testStrings) {
+    runTest(@"NSAttributedString", ^{
+        double width = 0;
+        for(NSString *item in testStrings) {
+            NSAttributedString *attributedString = [[NSAttributedString alloc] initWithString:item];
+            width = MAX(width, attributedString.size.width);
+        }
+        return width;
+    });
+}
 
-    for(NSUInteger i = 0; i < items.count; i++)
-    {
-        NSUInteger chunkIndex = i / ITEMS_ARRAY_CHUNK_THRESHOLD;
-        if(chunks.count <= chunkIndex)
+static void test_NSLayoutManager(NSArray* testStrings) {
+    runTest(@"NSLayoutManager", ^{
+        NSLayoutManager *layoutManager = [NSLayoutManager new];
+        NSTextContainer *textContainer = [NSTextContainer new];
+        [textContainer setLineFragmentPadding:0];
+        [layoutManager addTextContainer:textContainer];
+
+        NSMutableArray *textStorageObjects = [NSMutableArray new];
+        for(NSString *item in testStrings) {
+            @autoreleasepool {
+                NSTextStorage *textStorage = [[NSTextStorage alloc] initWithString:item];
+                [textStorage addLayoutManager:layoutManager];
+                [textStorageObjects addObject:textStorage];
+            }
+        }
+        [layoutManager glyphRangeForTextContainer:textContainer];
+        double width = [layoutManager usedRectForTextContainer:textContainer].size.width;
+        return width;
+    });
+}
+
+static void test_NSLayoutManager_chunked(NSArray* testStrings) {
+    runTest(@"NSLayoutManager_chunked", ^{
+        NSMutableArray *chunks = [NSMutableArray new];
+
+        for(NSUInteger i = 0; i < testStrings.count; i++) {
+            NSUInteger chunkIndex = i / ITEMS_ARRAY_CHUNK_THRESHOLD;
+            if(chunks.count <= chunkIndex)
+            {
+                NSMutableArray *chunk = [NSMutableArray new];
+                [chunks addObject:chunk];
+            }
+            NSMutableArray *chunk = [chunks objectAtIndex:chunkIndex];
+            [chunk addObject:[testStrings objectAtIndex:i]];
+        }
+
+        double width = 0;
+
+        NSLayoutManager *layoutManager = [NSLayoutManager new];
+        NSTextContainer *textContainer = [NSTextContainer new];
+        NSTextStorage *textStorage = [NSTextStorage new];
+        [textStorage addLayoutManager:layoutManager];
+
+        [textContainer setLineFragmentPadding:0];
+        [layoutManager addTextContainer:textContainer];
+
+        for(NSArray *chunk in chunks)
         {
-            NSMutableArray *chunk = [NSMutableArray new];
-            [chunks addObject:chunk];
+            for(NSString *item in chunk)
+            {
+                [textStorage replaceCharactersInRange:NSMakeRange(0, textStorage.length) withString:item];
+                [layoutManager glyphRangeForTextContainer:textContainer];
+                width = MAX(width,[layoutManager usedRectForTextContainer:textContainer].size.width);
+            }
         }
-        NSMutableArray *chunk = [chunks objectAtIndex:chunkIndex];
-        [chunk addObject:[items objectAtIndex:i]];
-    }
-    
-    double width = 0, timeTaken = 0;
-    NSDate *startDate = [NSDate dateWithTimeIntervalSinceNow:0];
-    
-    NSLayoutManager *layoutManager = [NSLayoutManager new];
-    NSTextContainer *textContainer = [NSTextContainer new];
-    NSTextStorage *textStorage = [NSTextStorage new];
-    [textStorage addLayoutManager:layoutManager];
-    
-    [textContainer setLineFragmentPadding:0];
-    [layoutManager addTextContainer:textContainer];
-    
-    for(NSArray *chunk in chunks)
-    {
-        for(NSString *item in chunk)
-        {
-            [textStorage replaceCharactersInRange:NSMakeRange(0, textStorage.length) withString:item];
-            [layoutManager glyphRangeForTextContainer:textContainer];
-            width = MAX(width,[layoutManager usedRectForTextContainer:textContainer].size.width);
-        }
-    }
-    timeTaken = -[startDate timeIntervalSinceNow];
-    NSLog(@"-----------------------Reusing NSTextStorage and chunking ------------------\n");
-    NSLog(@"Time taken to create %li NSTextStorage objects and measure them is %f",items.count, timeTaken);
+        return width;
+    });
 }
 
-int main(int argc, const char * argv[])
-{
-    NSMutableArray *items = [NSMutableArray new];
-    
+static NSArray *newTestStrings(void) {
+    NSMutableArray *strings = [NSMutableArray new];
     for(NSUInteger i = 0; i < ITEMS_COUNT; i++)
     {
         double random = (double)arc4random_uniform(1000) / 1000;
         NSString *randomNumber = [NSString stringWithFormat:@"%f", random];
-        [items addObject:randomNumber];
+        [strings addObject:randomNumber];
     }
-    
-    performAnalysisUsingSizeWithAttributes(items);
-    performAnalysisUsingNSAttributedString(items);
-    performAnalysisUsingNSLayoutManager(items);
-    performAnalysisByChunkingAndReusingLayoutManagerObjects(items);
+    return strings;
+}
+
+int main(int argc, const char * argv[])
+{
+    NSArray *testStrings = newTestStrings();
+    test_sizeWithAttributes(testStrings);
+    test_NSAttributedString(testStrings);
+    test_NSLayoutManager(testStrings);
+    test_NSLayoutManager_chunked(testStrings);
     
     return 0;
 }
